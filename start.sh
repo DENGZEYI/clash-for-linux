@@ -391,7 +391,19 @@ if_success "$Text5" "$Text6" "$ReturnStatus"
 echo ''
 if [ "$EXTERNAL_CONTROLLER_ENABLED" = "true" ]; then
   echo -e "Clash Dashboard 访问地址: http://${EXTERNAL_CONTROLLER}/ui"
-  echo -e "Secret: ${Secret}"
+
+  SHOW_SECRET="${CLASH_SHOW_SECRET:-false}"
+  SHOW_SECRET_MASKED="${CLASH_SHOW_SECRET_MASKED:-true}"
+
+  if [ "$SHOW_SECRET" = "true" ]; then
+    echo -e "Secret: ${Secret}"
+  elif [ "$SHOW_SECRET_MASKED" = "true" ]; then
+    # 脱敏：前4后4
+    masked="${Secret:0:4}****${Secret: -4}"
+    echo -e "Secret: ${masked}  (set CLASH_SHOW_SECRET=true to show full)"
+  else
+    echo -e "Secret: 已生成（未显示）。查看：/opt/clash-for-linux/conf/config.yaml 或 .env"
+  fi
 else
   echo -e "External Controller (Dashboard) 已禁用"
 fi
