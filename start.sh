@@ -45,7 +45,12 @@ PID_FILE="${CLASH_PID_FILE:-$Temp_Dir/clash.pid}"
 if [ "${SYSTEMD_MODE}" = "true" ]; then
   URL="${CLASH_URL:-}"
 else
-  URL=${CLASH_URL:?Error: CLASH_URL variable is not set or empty}
+  SYSTEMD_MODE="${SYSTEMD_MODE:-false}"
+  if [ "$SYSTEMD_MODE" = "true" ]; then
+    URL="${CLASH_URL:-}"
+  else
+    URL=${CLASH_URL:?Error: CLASH_URL variable is not set or empty}
+  fi
 fi
 
 # 获取 CLASH_SECRET 值：优先 .env；否则尝试读取旧 config；否则生成随机数
