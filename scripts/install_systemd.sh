@@ -40,6 +40,7 @@ User=$Service_User
 Group=$Service_Group
 PIDFile=$Server_Dir/temp/clash.pid
 Environment=CLASH_ENV_FILE=$Server_Dir/temp/clash-for-linux.sh
+Environment=SYSTEMD_MODE=true
 
 [Install]
 WantedBy=multi-user.target
