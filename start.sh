@@ -53,14 +53,37 @@ else
   fi
 fi
 
-# 获取 CLASH_SECRET 值：优先 .env；否则尝试读取旧 config；否则生成随机数
+# 获取 CLASH_SECRET 值：优先 .env；其次读取旧 config；占位符视为无效；最后生成随机值
 Secret="${CLASH_SECRET:-}"
+
+# 尝试从旧 config.yaml 读取（仅当 .env 未提供）
 if [ -z "$Secret" ] && [ -f "$Conf_Dir/config.yaml" ]; then
-  Secret="$(awk -F': ' '/^secret:/{print $2; exit}' "$Conf_Dir/config.yaml" || true)"
+  Secret="$(awk -F': *' '/^secret:/{gsub(/"/,"",$2); print $2; exit}' "$Conf_Dir/config.yaml" || true)"
 fi
+
+# 若读取到的是占位符（如 ${CLASH_SECRET}），视为无效
+if [[ "$Secret" =~ ^\$\{.*\}$ ]]; then
+  Secret=""
+fi
+
+# 兜底生成随机 secret
 if [ -z "$Secret" ]; then
   Secret="$(openssl rand -hex 32)"
 fi
+
+# 强制写入 secret 到指定配置文件（存在则替换，不存在则追加）
+force_write_secret() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+
+  if grep -qE '^[[:space:]]*secret:' "$file"; then
+    # 替换整行 secret（无论原来是啥，包括 SECRET_PLACEHOLDER / "${CLASH_SECRET}"）
+    sed -i -E "s|^[[:space:]]*secret:.*$|secret: ${Secret}|g" "$file"
+  else
+    # 没有 secret 行就追加到文件末尾
+    printf "\nsecret: %s\n" "$Secret" >> "$file"
+  fi
+}
 
 # 设置默认值
 CLASH_HTTP_PORT="${CLASH_HTTP_PORT:-7890}"
@@ -155,6 +178,8 @@ ensure_fallback_config() {
       exit 1
     fi
   fi
+  # 强制写入真实 secret
+  force_write_secret "$Conf_Dir/config.yaml"
 }
 
 SKIP_CONFIG_REBUILD=false
@@ -319,11 +344,11 @@ if [ "$SKIP_CONFIG_REBUILD" != "true" ]; then
   fi
 
   # 写入 secret
-  sed -r -i "/^secret: /s@(secret: ).*@\1${Secret}@g" "$Conf_Dir/config.yaml" || true
+  force_write_secret "$Conf_Dir/config.yaml"
 else
   # 兜底路径：尽量也写入 secret（若 config 里有 secret: 行就替换；没有就追加）
   if grep -qE '^secret:\s*' "$Conf_Dir/config.yaml" 2>/dev/null; then
-    sed -r -i "/^secret: /s@(secret: ).*@\1${Secret}@g" "$Conf_Dir/config.yaml" || true
+    force_write_secret "$Conf_Dir/config.yaml"
   else
     echo "secret: ${Secret}" >> "$Conf_Dir/config.yaml" || true
   fi
@@ -334,6 +359,12 @@ fi
 # 启动前确保 config.yaml 存在且非空
 if [ ! -s "$Conf_Dir/config.yaml" ]; then
   echo -e "\033[31m[ERROR]\033[0m conf/config.yaml 不存在或为空，无法启动 Clash" >&2
+  exit 1
+fi
+
+# 最终护栏：禁止未渲染的占位符进入运行态
+if grep -q '\${' "$Conf_Dir/config.yaml"; then
+  echo "[ERROR] config.yaml contains unresolved placeholders (\${...}). Please check template rendering." >&2
   exit 1
 fi
 
@@ -360,7 +391,19 @@ if_success "$Text5" "$Text6" "$ReturnStatus"
 echo ''
 if [ "$EXTERNAL_CONTROLLER_ENABLED" = "true" ]; then
   echo -e "Clash Dashboard 访问地址: http://${EXTERNAL_CONTROLLER}/ui"
-  echo -e "Secret: ${Secret}"
+
+  SHOW_SECRET="${CLASH_SHOW_SECRET:-false}"
+  SHOW_SECRET_MASKED="${CLASH_SHOW_SECRET_MASKED:-true}"
+
+  if [ "$SHOW_SECRET" = "true" ]; then
+    echo -e "Secret: ${Secret}"
+  elif [ "$SHOW_SECRET_MASKED" = "true" ]; then
+    # 脱敏：前4后4
+    masked="${Secret:0:4}****${Secret: -4}"
+    echo -e "Secret: ${masked}  (set CLASH_SHOW_SECRET=true to show full)"
+  else
+    echo -e "Secret: 已生成（未显示）。查看：/opt/clash-for-linux/conf/config.yaml 或 .env"
+  fi
 else
   echo -e "External Controller (Dashboard) 已禁用"
 fi
