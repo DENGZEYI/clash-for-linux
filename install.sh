@@ -401,13 +401,7 @@ fi
 # Dashboard / Secret
 # =========================
 section "控制面板"
-width=54
-box_title "Web 控制面板" "$width"
-box_row "注意放行端口" "9090" "$width" 12
-box_row "内网" "$(url "http://192.168.0.191:9090/ui")" "$width" 12
-box_row "公网" "$(url "http://<your-ip>:9090/ui")" "$width" 12
-box_row "公共" "$(url "https://board.example.com")" "$width" 12
-box_end "$width"
+
 api_port="$(parse_port "${EXTERNAL_CONTROLLER}")"
 api_host="${EXTERNAL_CONTROLLER%:*}"
 
