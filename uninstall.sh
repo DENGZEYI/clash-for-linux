@@ -6,12 +6,9 @@ set -euo pipefail
 # =========================
 Install_Dir="${CLASH_INSTALL_DIR:-/opt/clash-for-linux}"
 Service_Name="clash-for-linux"
-Service_User="${CLASH_SERVICE_USER:-clash}"
-Service_Group="${CLASH_SERVICE_GROUP:-$Service_User}"
+Service_User="root"
+Service_Group="root"
 Unit_Path="/etc/systemd/system/${Service_Name}.service"
-
-# 可选：删除运行用户/组（默认不删）
-CLASH_REMOVE_USER="${CLASH_REMOVE_USER:-false}"
 
 # =========================
 # 彩色输出
@@ -134,25 +131,6 @@ else
 fi
 
 # =========================
-# 6) 可选：删除运行用户/组（默认不删）
-# =========================
-if [ "$CLASH_REMOVE_USER" = "true" ]; then
-  warn "CLASH_REMOVE_USER=true：将尝试删除运行用户/组（若存在且无依赖）"
-
-  if id "$Service_User" >/dev/null 2>&1; then
-    userdel "$Service_User" >/dev/null 2>&1 || true
-    ok "已尝试删除用户: ${Service_User}"
-  fi
-
-  if getent group "$Service_Group" >/dev/null 2>&1; then
-    groupdel "$Service_Group" >/dev/null 2>&1 || true
-    ok "已尝试删除组: ${Service_Group}"
-  fi
-else
-  info "默认不删除用户/组。若确认无其它用途，可用：CLASH_REMOVE_USER=true sudo bash uninstall.sh"
-fi
-
-# =========================
 # 7) 提示：当前终端代理变量需要手动清
 # =========================
 echo
@@ -161,4 +139,4 @@ echo "  unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY"
 echo "  # 或关闭终端重新打开"
 
 echo
-ok "卸载完成 ✅"
+ok "卸载完成（root-only 模式）✅"

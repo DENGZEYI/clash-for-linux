@@ -7,8 +7,8 @@ set -euo pipefail
 Server_Dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 Install_Dir="${CLASH_INSTALL_DIR:-/opt/clash-for-linux}"
 Service_Name="clash-for-linux"
-Service_User="${CLASH_SERVICE_USER:-clash}"
-Service_Group="${CLASH_SERVICE_GROUP:-$Service_User}"
+Service_User="root"
+Service_Group="root"
 
 # =========================
 # 彩色输出（统一 printf + 自动降级 + 手动关色）
@@ -217,19 +217,7 @@ if [ "${#Port_Conflicts[@]}" -ne 0 ]; then
   warn "检测到端口冲突: ${Port_Conflicts[*]}，运行时将自动分配可用端口"
 fi
 
-# =========================
-# 创建运行用户/组
-# =========================
-if ! getent group "$Service_Group" >/dev/null 2>&1; then
-  groupadd --system "$Service_Group"
-fi
-
-if ! id "$Service_User" >/dev/null 2>&1; then
-  useradd --system --no-create-home --shell /usr/sbin/nologin --gid "$Service_Group" "$Service_User"
-fi
-
 install -d -m 0755 "$Install_Dir/conf" "$Install_Dir/logs" "$Install_Dir/temp"
-chown -R "$Service_User:$Service_Group" "$Install_Dir/conf" "$Install_Dir/logs" "$Install_Dir/temp"
 
 # =========================
 # Clash 内核就绪检查/下载

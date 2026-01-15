@@ -35,6 +35,12 @@ fi
 # systemd 模式开关（必须在 set -u 下安全）
 SYSTEMD_MODE="${SYSTEMD_MODE:-false}"
 
+# root-only 强约束：不是 root 直接退出
+if [ "$(id -u)" -ne 0 ]; then
+  echo "[ERR] root-only mode: please run as root" >&2
+  exit 2
+fi
+
 # 给二进制启动程序、脚本等添加可执行权限
 chmod +x "$Server_Dir/bin/"* 2>/dev/null || true
 chmod +x "$Server_Dir/scripts/"* 2>/dev/null || true
@@ -46,14 +52,9 @@ fi
 
 Conf_Dir="$Server_Dir/conf"
 
-# systemd + 非 root 运行（clash 用户）时，临时目录与日志目录必须可写
-if [ "${SYSTEMD_MODE:-false}" = "true" ] && [ "$(id -u)" -ne 0 ]; then
-  Temp_Dir="/tmp/clash-for-linux"
-  Log_Dir="/tmp/clash-for-linux/logs"
-else
-  Temp_Dir="$Server_Dir/temp"
-  Log_Dir="$Server_Dir/logs"
-fi
+# root-only：统一使用安装目录下的 temp/logs
+Temp_Dir="$Server_Dir/temp"
+Log_Dir="$Server_Dir/logs"
 
 mkdir -p "$Conf_Dir" "$Temp_Dir" "$Log_Dir" || {
   echo "[ERR] cannot create dirs: Conf_Dir=$Conf_Dir Temp_Dir=$Temp_Dir Log_Dir=$Log_Dir"
@@ -161,23 +162,12 @@ upsert_yaml_kv() {
 }
 
 ensure_ui_links() {
-  # 你的真实 UI 产物目录（你已确认一直在这里）
   local ui_src="${UI_SRC_DIR:-$Server_Dir/dashboard/public}"
 
-  # 稳定 UI 入口：/opt/clash-for-linux/conf/ui -> /opt/clash-for-linux/dashboard/public
   mkdir -p "$Conf_Dir" 2>/dev/null || true
   if [ -d "$ui_src" ]; then
     ln -sfn "$ui_src" "$Conf_Dir/ui" 2>/dev/null || true
   fi
-
-  # 运行态兼容：/tmp/clash-for-linux/ui -> /opt/clash-for-linux/conf/ui
-  mkdir -p "$Temp_Dir" 2>/dev/null || true
-  if [ -e "$Conf_Dir/ui" ]; then
-    ln -sfn "$Conf_Dir/ui" "$Temp_Dir/ui" 2>/dev/null || true
-  fi
-
-  # 可选：把权限尽量理顺（不强制失败）
-  chown -h clash:clash "$Conf_Dir/ui" "$Temp_Dir/ui" 2>/dev/null || true
 }
 
 force_write_controller_and_ui() {
@@ -491,15 +481,11 @@ if grep -qE '^(proxies:|proxy-providers:|mixed-port:|port:)' "$Temp_Dir/clash.ya
   # 创建 UI 软链（systemd non-root 用 /tmp）
   Dashboard_Src="$Server_Dir/dashboard/public"
   if [ -d "$Dashboard_Src" ]; then
-    if [ "${SYSTEMD_MODE:-false}" = "true" ] && [ "$(id -u)" -ne 0 ]; then
-      ln -sfn "$Dashboard_Src" "$Temp_Dir/ui" 2>/dev/null || true
-    else
-      ln -sfn "$Dashboard_Src" "$Conf_Dir/ui" 2>/dev/null || true
-    fi
+    ln -sfn "$Dashboard_Src" "$Conf_Dir/ui" 2>/dev/null || true
   fi
 
-  SKIP_CONFIG_REBUILD=true
-fi
+    SKIP_CONFIG_REBUILD=true
+  fi
 
 #################### 订阅转换/拼接（非兜底路径） ####################
 if [ "$SKIP_CONFIG_REBUILD" != "true" ]; then
@@ -576,11 +562,7 @@ if [ "$SKIP_CONFIG_REBUILD" != "true" ]; then
   apply_mixin_config "$CONFIG_FILE" "$Server_Dir"
 
   # 6) 是否同步到 conf（root/非 systemd 时才做；systemd+非root跳过）
-  if [ "${SYSTEMD_MODE:-false}" = "true" ] && [ "$(id -u)" -ne 0 ]; then
-    echo "[WARN] systemd(non-root): skip copying config to $Conf_Dir"
-  else
-    \cp "$CONFIG_FILE" "$Conf_Dir/"
-  fi
+  \cp "$CONFIG_FILE" "$Conf_Dir/"
 
   # 7) Dashboard external-ui（systemd+非root：把 ui 放 Temp_Dir 下，避免写 conf）
   Work_Dir="$(cd "$(dirname "$0")" && pwd)"
@@ -626,15 +608,8 @@ fi
 #################### 启动Clash服务 ####################
 
 # 选择运行期配置文件与工作目录
-# - systemd + 非 root(通常 User=clash)：用 Temp_Dir 下的运行态配置，工作目录也用 Temp_Dir（可写）
-# - 其他情况：用 Conf_Dir/config.yaml，工作目录用 Conf_Dir
-if [ "${SYSTEMD_MODE:-false}" = "true" ] && [ "$(id -u)" -ne 0 ]; then
-  CONFIG_FILE="${CONFIG_FILE:-$Temp_Dir/config.yaml}"
-  RUNTIME_DIR="${Temp_Dir}"
-else
-  CONFIG_FILE="${CONFIG_FILE:-$Conf_Dir/config.yaml}"
-  RUNTIME_DIR="${Conf_Dir}"
-fi
+CONFIG_FILE="${CONFIG_FILE:-$Conf_Dir/config.yaml}"
+RUNTIME_DIR="${Conf_Dir}"
 
 # 启动前确保配置文件存在且非空
 if [ ! -s "$CONFIG_FILE" ]; then

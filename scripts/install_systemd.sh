@@ -6,8 +6,8 @@ set -euo pipefail
 Server_Dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 Service_Name="clash-for-linux"
 
-Service_User="${CLASH_SERVICE_USER:-clash}"
-Service_Group="${CLASH_SERVICE_GROUP:-$Service_User}"
+Service_User="root"
+Service_Group="root"
 
 Unit_Path="/etc/systemd/system/${Service_Name}.service"
 PID_FILE="$Server_Dir/temp/clash.pid"
@@ -19,29 +19,9 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-#################### 用户 / 组 ####################
-
-if ! getent group "$Service_Group" >/dev/null 2>&1; then
-  groupadd --system "$Service_Group"
-fi
-
-if ! id "$Service_User" >/dev/null 2>&1; then
-  useradd \
-    --system \
-    --no-create-home \
-    --shell /usr/sbin/nologin \
-    --gid "$Service_Group" \
-    "$Service_User"
-fi
-
 #################### 目录初始化 ####################
 
 install -d -m 0755 \
-  "$Server_Dir/conf" \
-  "$Server_Dir/logs" \
-  "$Server_Dir/temp"
-
-chown -R "$Service_User:$Service_Group" \
   "$Server_Dir/conf" \
   "$Server_Dir/logs" \
   "$Server_Dir/temp"
@@ -67,10 +47,6 @@ Restart=on-failure
 RestartSec=5
 TimeoutStartSec=120
 TimeoutStopSec=30
-
-# 运行用户
-User=$Service_User
-Group=$Service_Group
 
 # 环境变量
 Environment=SYSTEMD_MODE=true
