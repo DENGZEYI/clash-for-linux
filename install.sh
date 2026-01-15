@@ -430,14 +430,22 @@ else
 fi
 
 # =========================
-# 订阅状态
+# 订阅配置（必须）
 # =========================
-section "订阅配置"
+section "订阅状态"
+
+ENV_FILE="${Install_Dir}/.env"
 
 if [[ -n "${CLASH_URL:-}" ]]; then
   ok "订阅地址已配置（CLASH_URL 已写入 .env）"
 else
-  warn "订阅地址未配置：请编辑 $(path "${Install_Dir}/.env") 设置 CLASH_URL"
+  warn "订阅地址未配置（必须）"
+  log ""
+  log "配置订阅地址："
+  log "  $(cmd "sudo bash -c 'echo \"CLASH_URL=<订阅地址>\" > ${ENV_FILE}'")"
+  log ""
+  log "配置完成后重启服务："
+  log "  $(cmd "sudo systemctl restart ${Service_Name}.service")"
 fi
 
 # =========================
