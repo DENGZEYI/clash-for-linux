@@ -131,30 +131,70 @@ force_write_secret() {
   fi
 }
 
+ensure_ui_link() {
+  mkdir -p "$Conf_Dir"
+  ln -sfn "$Server_Dir/dashboard/public" "$Conf_Dir/ui"
+}
+
+# --- helpers: upsert yaml key (top-level), ensure UI links ---
+upsert_yaml_kv() {
+  # Usage: upsert_yaml_kv <file> <key> <value>
+  # Writes: key: value  (top-level)
+  local file="$1" key="$2" value="$3"
+  [ -n "$file" ] && [ -n "$key" ] || return 1
+
+  # 如果文件不存在，先创建
+  [ -f "$file" ] || : >"$file" || return 1
+
+  if grep -qE "^[[:space:]]*${key}:[[:space:]]*" "$file" 2>/dev/null; then
+    # 替换整行（避免残留引号）
+    sed -i -E "s|^[[:space:]]*${key}:[[:space:]]*.*$|${key}: ${value}|g" "$file"
+  else
+    # 追加前保证有换行
+    tail -c 1 "$file" 2>/dev/null | read -r _last || true
+    # shellcheck disable=SC2034
+    if [ "$(tail -c 1 "$file" 2>/dev/null || true)" != "" ]; then
+      printf "\n" >>"$file"
+    fi
+    printf "%s: %s\n" "$key" "$value" >>"$file"
+  fi
+}
+
+ensure_ui_links() {
+  # 你的真实 UI 产物目录（你已确认一直在这里）
+  local ui_src="${UI_SRC_DIR:-$Server_Dir/dashboard/public}"
+
+  # 稳定 UI 入口：/opt/clash-for-linux/conf/ui -> /opt/clash-for-linux/dashboard/public
+  mkdir -p "$Conf_Dir" 2>/dev/null || true
+  if [ -d "$ui_src" ]; then
+    ln -sfn "$ui_src" "$Conf_Dir/ui" 2>/dev/null || true
+  fi
+
+  # 运行态兼容：/tmp/clash-for-linux/ui -> /opt/clash-for-linux/conf/ui
+  mkdir -p "$Temp_Dir" 2>/dev/null || true
+  if [ -e "$Conf_Dir/ui" ]; then
+    ln -sfn "$Conf_Dir/ui" "$Temp_Dir/ui" 2>/dev/null || true
+  fi
+
+  # 可选：把权限尽量理顺（不强制失败）
+  chown -h clash:clash "$Conf_Dir/ui" "$Temp_Dir/ui" 2>/dev/null || true
+}
+
 force_write_controller_and_ui() {
   local file="$1"
   local controller="${EXTERNAL_CONTROLLER:-127.0.0.1:9090}"
 
-  # external-controller
-  if grep -qE '^[[:space:]]*external-controller:' "$file" 2>/dev/null; then
-    sed -i -E "s|^[[:space:]]*external-controller:.*$|external-controller: ${controller}|g" "$file"
-  else
-    printf "\nexternal-controller: %s\n" "$controller" >> "$file"
-  fi
+  [ -n "$file" ] || return 1
 
-  # systemd + 非root：external-ui 必须指向可写的 Temp_Dir/ui
-  local ui_link
-  if [ "${SYSTEMD_MODE:-false}" = "true" ] && [ "$(id -u)" -ne 0 ]; then
-    ui_link="$Temp_Dir/ui"
-  else
-    ui_link="$Conf_Dir/ui"
-  fi
+  # 1) external-controller
+  upsert_yaml_kv "$file" "external-controller" "$controller" || true
 
-  # 无条件写 external-ui（不要再用 -e 判断卡死）
-  if grep -qE '^[[:space:]]*external-ui:' "$file" 2>/dev/null; then
-    sed -i -E "s|^[[:space:]]*external-ui:.*$|external-ui: ${ui_link}|g" "$file"
-  else
-    printf "external-ui: %s\n" "$ui_link" >> "$file"
+  # 2) external-ui：永远写稳定路径 Conf_Dir/ui（脚本保证它存在且指向真实 UI）
+  ensure_ui_links
+
+  # 如果 UI 源目录缺失，就不要写 external-ui（避免写一个死路径）
+  if [ -e "$Conf_Dir/ui" ]; then
+    upsert_yaml_kv "$file" "external-ui" "$Conf_Dir/ui" || true
   fi
 }
 
