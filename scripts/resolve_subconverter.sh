@@ -34,14 +34,20 @@ try_subconverter_bin() {
 	return 1
 }
 
-if [ -n "$SUBCONVERTER_PATH" ]; then
-	try_subconverter_bin "$SUBCONVERTER_PATH" && return 0
+# ------------------------------------------------------------
+# FIX: SUBCONVERTER_PATH may be unbound when parent shell uses `set -u`
+# Use ${SUBCONVERTER_PATH:-} to avoid "unbound variable"
+# ------------------------------------------------------------
+SUBCONVERTER_PATH_SAFE="${SUBCONVERTER_PATH:-}"
+
+if [ -n "$SUBCONVERTER_PATH_SAFE" ]; then
+	try_subconverter_bin "$SUBCONVERTER_PATH_SAFE" && return 0
 else
 	try_subconverter_bin "$Default_Bin" && return 0
 fi
 
 Detected_Arch="${CpuArch:-$(uname -m 2>/dev/null)}"
-Resolved_Arch=$(resolve_subconverter_arch "$Detected_Arch")
+Resolved_Arch="$(resolve_subconverter_arch "$Detected_Arch")"
 
 if [ -n "$Resolved_Arch" ]; then
 	try_subconverter_bin "${Subconverter_Dir}/subconverter-${Resolved_Arch}" && return 0
@@ -60,6 +66,10 @@ if [ "$Auto_Download" != "false" ] && [ -n "$Resolved_Arch" ]; then
 	fi
 
 	Download_Url="${Download_Template//\{arch\}/${Resolved_Arch}}"
+
+	# Ensure temp dirs exist
+	mkdir -p "${Server_Dir}/temp" "${Subconverter_Dir}"
+
 	Download_Archive="${Server_Dir}/temp/subconverter-${Resolved_Arch}.tar.gz"
 	Extract_Dir="${Server_Dir}/temp/subconverter-${Resolved_Arch}"
 	mkdir -p "${Extract_Dir}"
@@ -73,14 +83,18 @@ if [ "$Auto_Download" != "false" ] && [ -n "$Resolved_Arch" ]; then
 		return 0
 	fi
 
-	if [ -f "${Download_Archive}" ]; then
+	# Only extract if archive exists and is non-empty
+	if [ -s "${Download_Archive}" ]; then
 		tar -xzf "${Download_Archive}" -C "${Extract_Dir}" 2>/dev/null
-		Downloaded_Bin=$(find "${Extract_Dir}" -maxdepth 3 -type f -name "subconverter" -print -quit)
+		Downloaded_Bin="$(find "${Extract_Dir}" -maxdepth 3 -type f -name "subconverter" -print -quit)"
 		if [ -n "${Downloaded_Bin}" ]; then
 			mv "${Downloaded_Bin}" "${Subconverter_Dir}/subconverter-${Resolved_Arch}"
 			chmod +x "${Subconverter_Dir}/subconverter-${Resolved_Arch}"
 			try_subconverter_bin "${Subconverter_Dir}/subconverter-${Resolved_Arch}" && return 0
 		fi
 	fi
+
 	echo -e "\033[33m[WARN] subconverter 自动下载失败，跳过订阅转换\033[0m"
 fi
+
+return 0
