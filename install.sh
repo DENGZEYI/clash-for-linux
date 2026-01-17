@@ -144,7 +144,7 @@ info "CPU architecture: ${CpuArch}"
 # - 若用户回车跳过，则保持原行为：装完提示手动配置
 # =========================
 prompt_clash_url_if_empty() {
-  # 兼容 .env 里可能是 CLASH_URL= 或 CLASH_URL=""
+  # 兼容 .env 里可能是 CLASH_URL= / export CLASH_URL= / 带引号
   local cur="${CLASH_URL:-}"
   cur="${cur%\"}"; cur="${cur#\"}"
 
@@ -163,26 +163,29 @@ prompt_clash_url_if_empty() {
   echo "请粘贴你的 Clash 订阅地址（直接回车跳过，稍后手动编辑 .env）："
   read -r -p "Clash URL: " input_url
 
+  input_url="$(printf '%s' "$input_url" | tr -d '\r')"
+
+  # 回车跳过：保持原行为（不写入）
   if [ -z "$input_url" ]; then
     warn "已跳过填写订阅地址，安装完成后请手动编辑：${Install_Dir}/.env"
     return 0
   fi
 
+  # 先校验再写入，避免污染 .env
   if ! echo "$input_url" | grep -Eq '^https?://'; then
     err "订阅地址格式不正确（必须以 http:// 或 https:// 开头）"
     exit 1
   fi
 
-  # 写入 .env：优先替换已存在的 CLASH_URL= 行；若不存在则追加
-  if grep -qE '^CLASH_URL=' "$Install_Dir/.env"; then
-    # 用 | 做分隔符，避免 URL 里有 /
-    sed -i "s|^CLASH_URL=.*|CLASH_URL=\"$input_url\"|g" "$Install_Dir/.env"
-  else
-    echo "CLASH_URL=\"$input_url\"" >> "$Install_Dir/.env"
-  fi
+  ENV_FILE="${Install_Dir}/.env"
+  mkdir -p "$Install_Dir"
+  [ -f "$ENV_FILE" ] || touch "$ENV_FILE"
+
+  # ✅ 只用这一套写入逻辑（统一 export KEY="..."，兼容旧格式）
+  write_env_kv "$ENV_FILE" "CLASH_URL" "$input_url"
 
   export CLASH_URL="$input_url"
-  ok "已写入订阅地址到：${Install_Dir}/.env"
+  ok "已写入订阅地址到：${ENV_FILE}"
 }
 
 prompt_clash_url_if_empty
@@ -243,6 +246,19 @@ wait_secret_ready() {
     sleep 0.2
   done
   return 1
+}
+
+write_env_kv() {
+  local file="$1"
+  local key="$2"
+  local val="$3"
+
+  # 统一成 export KEY="value"
+  if grep -qE "^(export[[:space:]]+)?${key}=" "$file"; then
+    sed -i -E "s|^(export[[:space:]]+)?${key}=.*|export ${key}=\"${val}\"|g" "$file"
+  else
+    printf '\nexport %s="%s"\n' "$key" "$val" >> "$file"
+  fi
 }
 
 # 计算字符串可视宽度：中文大概率按 2 宽处理（简单够用版）
