@@ -139,6 +139,36 @@ fi
 info "CPU architecture: ${CpuArch}"
 
 # =========================
+# .env 写入工具：write_env_kv（必须在 prompt 之前定义）
+# - 自动创建文件
+# - 存在则替换，不存在则追加
+# - 统一写成：export KEY="VALUE"
+# - 自动转义双引号/反斜杠
+# =========================
+escape_env_value() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+write_env_kv() {
+  local file="$1"
+  local key="$2"
+  local val="$3"
+
+  mkdir -p "$(dirname "$file")" 2>/dev/null || true
+  [ -f "$file" ] || touch "$file"
+
+  val="$(printf '%s' "$val" | tr -d '\r')"
+  local esc
+  esc="$(escape_env_value "$val")"
+
+  if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file"; then
+    sed -i -E "s|^[[:space:]]*(export[[:space:]]+)?${key}=.*|export ${key}=\"${esc}\"|g" "$file"
+  else
+    printf 'export %s="%s"\n' "$key" "$esc" >> "$file"
+  fi
+}
+
+# =========================
 # 交互式填写订阅地址（仅在 CLASH_URL 为空时触发）
 # - 若非 TTY（CI/管道）则跳过交互
 # - 若用户回车跳过，则保持原行为：装完提示手动配置
@@ -246,19 +276,6 @@ wait_secret_ready() {
     sleep 0.2
   done
   return 1
-}
-
-write_env_kv() {
-  local file="$1"
-  local key="$2"
-  local val="$3"
-
-  # 统一成 export KEY="value"
-  if grep -qE "^(export[[:space:]]+)?${key}=" "$file"; then
-    sed -i -E "s|^(export[[:space:]]+)?${key}=.*|export ${key}=\"${val}\"|g" "$file"
-  else
-    printf '\nexport %s="%s"\n' "$key" "$val" >> "$file"
-  fi
 }
 
 # 计算字符串可视宽度：中文大概率按 2 宽处理（简单够用版）
