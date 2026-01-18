@@ -191,26 +191,28 @@ ensure_ui_links() {
 force_write_controller_and_ui() {
   local file="$1"
   local controller="${EXTERNAL_CONTROLLER:-127.0.0.1:9090}"
-
-  # external-ui：必须在 conf 子目录（SAFE_PATH）
-  local ui_dir="${EXTERNAL_UI_DIR:-$Conf_Dir/external-ui}"
+  local MIHOMO_UI_DIR="/opt/clash-for-linux/.config/mihomo/ui"
 
   [ -n "$file" ] || return 1
 
   # 1) external-controller
   upsert_yaml_kv "$file" "external-controller" "$controller" || true
 
-  # 2) external-ui（落在 SAFE_PATH）
-  ensure_ui_links
+  # 2) external-ui：写 mihomo SAFE_PATH
+  mkdir -p "$MIHOMO_UI_DIR" 2>/dev/null || true
 
-  if [ -d "$ui_dir" ]; then
-    upsert_yaml_kv "$file" "external-ui" "$ui_dir" || true
-  else
-    # 目标目录不存在则不写，避免写死路径导致 mihomo fatal
-    # 如果你没有 delete_yaml_key 函数，就注释掉这行也没关系
-    delete_yaml_key "$file" "external-ui" 2>/dev/null || true
+  # 如果 SAFE_PATH 下没有 index.html，尝试从 conf/ui 同步一次
+  if [ ! -f "$MIHOMO_UI_DIR/index.html" ] && [ -d "$Conf_Dir/ui" ]; then
+    rm -rf "$MIHOMO_UI_DIR"/* 2>/dev/null || true
+    cp -a "$Conf_Dir/ui/." "$MIHOMO_UI_DIR/" 2>/dev/null || true
+  fi
+
+  # 只有真的有 UI 文件才写 external-ui（否则写了也白屏）
+  if [ -f "$MIHOMO_UI_DIR/index.html" ]; then
+    upsert_yaml_kv "$file" "external-ui" "$MIHOMO_UI_DIR" || true
   fi
 }
+
 
 fix_external_ui_by_safe_paths() {
   local bin="$1"
@@ -593,8 +595,6 @@ if [ "$SKIP_CONFIG_REBUILD" != "true" ]; then
     BIN="${Server_Dir}/bin/clash-linux-amd64"
     NEW_CFG="$CONFIG_FILE"
     OLD_CFG="${Conf_Dir}/config.yaml"
-    TEST_OUT="$Temp_Dir/config.test.out"
-
     TEST_OUT="$Temp_Dir/config.test.out"
 
     if [ -x "$BIN" ] && [ -f "$NEW_CFG" ]; then
