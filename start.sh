@@ -212,6 +212,57 @@ force_write_controller_and_ui() {
   fi
 }
 
+fix_external_ui_by_safe_paths() {
+  local bin="$1"
+  local cfg="$2"
+  local test_out="$3"
+  local ui_src="${UI_SRC_DIR:-$Server_Dir/dashboard/public}"
+
+  [ -x "$bin" ] || return 0
+  [ -s "$cfg" ] || return 0
+
+  # 先跑一次 test，把原因写入 test_out
+  "$bin" -t -f "$cfg" >"$test_out" 2>&1
+  local rc=$?
+  [ $rc -eq 0 ] && return 0
+
+  # 只处理 external-ui 的 SAFE_PATH 报错
+  if ! grep -q "SAFE_PATHS" "$test_out"; then
+    return $rc
+  fi
+  if ! grep -q "external-ui" "$cfg" && ! grep -q "external-ui" "$test_out"; then
+    return $rc
+  fi
+
+  # 从 test_out 抽取 allowed paths 的第一个 base
+  # 例：allowed paths: [/opt/clash-for-linux/.config/mihomo]
+  local base
+  base="$(sed -n 's/.*allowed paths: \[\([^]]*\)\].*/\1/p' "$test_out" | head -n 1)"
+
+  [ -n "$base" ] || return $rc
+
+  # external-ui 必须在 allowed base 的子目录里
+  local ui_dst="$base/ui"
+  mkdir -p "$ui_dst" 2>/dev/null || true
+
+  # 把 UI 文件同步过去（真实目录，不用软链，避免跳出 base）
+  if [ -d "$ui_src" ]; then
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --delete "$ui_src"/ "$ui_dst"/ 2>/dev/null || true
+    else
+      rm -rf "$ui_dst"/* 2>/dev/null || true
+      cp -a "$ui_src"/. "$ui_dst"/ 2>/dev/null || true
+    fi
+  fi
+
+  # 重写 external-ui 到新目录
+  upsert_yaml_kv "$cfg" "external-ui" "$ui_dst" || true
+
+  # 再 test 一次
+  "$bin" -t -f "$cfg" >"$test_out" 2>&1
+  return $?
+}
+
 # 设置默认值
 CLASH_HTTP_PORT="${CLASH_HTTP_PORT:-7890}"
 CLASH_SOCKS_PORT="${CLASH_SOCKS_PORT:-7891}"
@@ -544,17 +595,18 @@ if [ "$SKIP_CONFIG_REBUILD" != "true" ]; then
     OLD_CFG="${Conf_Dir}/config.yaml"
     TEST_OUT="$Temp_Dir/config.test.out"
 
-    if [ -x "$BIN" ] && [ -f "$NEW_CFG" ]; then
-      : >"$TEST_OUT"
+    TEST_OUT="$Temp_Dir/config.test.out"
 
+    if [ -x "$BIN" ] && [ -f "$NEW_CFG" ]; then
+      # 先尝试自动修复 external-ui 的 SAFE_PATH 问题（内部会跑 -t）
       set +e
-      "$BIN" -t -f "$NEW_CFG" >"$TEST_OUT" 2>&1
+      fix_external_ui_by_safe_paths "$BIN" "$NEW_CFG" "$TEST_OUT"
       test_rc=$?
       set -e
 
-      if [ $test_rc -ne 0 ]; then
+      if [ "$test_rc" -ne 0 ]; then
         echo "[ERROR] Generated config invalid, rc=$test_rc, reason(file=$TEST_OUT, size=$(wc -c <"$TEST_OUT" 2>/dev/null || echo 0))" >&2
-        tail -n 200 "$TEST_OUT" >&2
+        tail -n 120 "$TEST_OUT" >&2 || true
 
         echo "[ERROR] fallback to last good config: $OLD_CFG" >&2
         if [ -f "$OLD_CFG" ]; then
