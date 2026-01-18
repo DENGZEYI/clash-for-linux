@@ -89,6 +89,9 @@ URL="${CLASH_URL:-}"
 # 清理可能的 CRLF（Windows 写 .env 很常见）
 URL="$(printf '%s' "$URL" | tr -d '\r')"
 
+#让 bash 子进程能拿到
+export CLASH_URL="$URL"
+
 # 只有在“需要在线更新订阅”的模式下才强制要求 URL
 if [ -z "$URL" ] && [ "${SYSTEMD_MODE:-false}" != "true" ]; then
   echo "[ERR] CLASH_URL 为空（未配置订阅地址）"
@@ -100,7 +103,7 @@ Secret="${CLASH_SECRET:-}"
 
 # 尝试从旧 config.yaml 读取（仅当 .env 未提供）
 if [ -z "$Secret" ] && [ -f "$Conf_Dir/config.yaml" ]; then
-  Secret="$(awk -F': *' '/^secret:/{gsub(/"/,"",$2); print $2; exit}' "$Conf_Dir/config.yaml" || true)"
+  Secret="$(awk -F': *' '/^[[:space:]]*secret[[:space:]]*:/{print $2; exit}' "$Conf_Dir/config.yaml" 2>/dev/null | tr -d '"' || true)"
 fi
 
 # 若读取到的是占位符（如 ${CLASH_SECRET}），视为无效
@@ -163,7 +166,6 @@ upsert_yaml_kv() {
 
 ensure_ui_links() {
   local ui_src="${UI_SRC_DIR:-$Server_Dir/dashboard/public}"
-
   mkdir -p "$Conf_Dir" 2>/dev/null || true
   if [ -d "$ui_src" ]; then
     ln -sfn "$ui_src" "$Conf_Dir/ui" 2>/dev/null || true
@@ -176,16 +178,66 @@ force_write_controller_and_ui() {
 
   [ -n "$file" ] || return 1
 
-  # 1) external-controller
+  # external-controller
   upsert_yaml_kv "$file" "external-controller" "$controller" || true
 
-  # 2) external-ui：永远写稳定路径 Conf_Dir/ui（脚本保证它存在且指向真实 UI）
+  # external-ui: fixed to Conf_Dir/ui
   ensure_ui_links
-
-  # 如果 UI 源目录缺失，就不要写 external-ui（避免写一个死路径）
   if [ -e "$Conf_Dir/ui" ]; then
     upsert_yaml_kv "$file" "external-ui" "$Conf_Dir/ui" || true
   fi
+}
+
+
+fix_external_ui_by_safe_paths() {
+  local bin="$1"
+  local cfg="$2"
+  local test_out="$3"
+  local ui_src="${UI_SRC_DIR:-$Server_Dir/dashboard/public}"
+
+  [ -x "$bin" ] || return 0
+  [ -s "$cfg" ] || return 0
+
+  # 先跑一次 test，把原因写入 test_out
+  "$bin" -t -f "$cfg" >"$test_out" 2>&1
+  local rc=$?
+  [ $rc -eq 0 ] && return 0
+
+  # 只处理 external-ui 的 SAFE_PATH 报错
+  if ! grep -q "SAFE_PATHS" "$test_out"; then
+    return $rc
+  fi
+  if ! grep -q "external-ui" "$cfg" && ! grep -q "external-ui" "$test_out"; then
+    return $rc
+  fi
+
+  # 从 test_out 抽取 allowed paths 的第一个 base
+  # 例：allowed paths: [/opt/clash-for-linux/.config/mihomo]
+  local base
+  base="$(sed -n 's/.*allowed paths: \[\([^]]*\)\].*/\1/p' "$test_out" | head -n 1)"
+
+  [ -n "$base" ] || return $rc
+
+  # external-ui 必须在 allowed base 的子目录里
+  local ui_dst="$base/ui"
+  mkdir -p "$ui_dst" 2>/dev/null || true
+
+  # 把 UI 文件同步过去（真实目录，不用软链，避免跳出 base）
+  if [ -d "$ui_src" ]; then
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --delete "$ui_src"/ "$ui_dst"/ 2>/dev/null || true
+    else
+      rm -rf "$ui_dst"/* 2>/dev/null || true
+      cp -a "$ui_src"/. "$ui_dst"/ 2>/dev/null || true
+    fi
+  fi
+
+  # 重写 external-ui 到新目录
+  upsert_yaml_kv "$cfg" "external-ui" "$ui_dst" || true
+
+  # 再 test 一次
+  "$bin" -t -f "$cfg" >"$test_out" 2>&1
+  return $?
 }
 
 # 设置默认值
@@ -263,6 +315,44 @@ if_success() {
   else
     exit "$rc"
   fi
+}
+
+ensure_subconverter() {
+  local bin="${Server_Dir}/tools/subconverter/subconverter"
+  local port="25500"
+
+  # 没有二进制直接跳过
+  if [ ! -x "$bin" ]; then
+    echo "[WARN] subconverter bin not found: $bin"
+    export SUBCONVERTER_READY="false"
+    return 0
+  fi
+
+  # 已在监听则认为就绪
+  if ss -lntp 2>/dev/null | grep -qE ":${port}[[:space:]]"; then
+    export SUBCONVERTER_URL="${SUBCONVERTER_URL:-http://127.0.0.1:${port}}"
+    export SUBCONVERTER_READY="true"
+    return 0
+  fi
+
+  # 启动（后台）
+  echo "[INFO] starting subconverter..."
+  (cd "${Server_Dir}/tools/subconverter" && nohup "./subconverter" >/dev/null 2>&1 &)
+
+  # 等待端口起来
+  for _ in 1 2 3 4 5; do
+    sleep 1
+    if ss -lntp 2>/dev/null | grep -qE ":${port}[[:space:]]"; then
+      export SUBCONVERTER_URL="${SUBCONVERTER_URL:-http://127.0.0.1:${port}}"
+      export SUBCONVERTER_READY="true"
+      echo "[OK] subconverter ready at ${SUBCONVERTER_URL}"
+      return 0
+    fi
+  done
+
+  echo "[WARN] subconverter start failed or port not ready"
+  export SUBCONVERTER_READY="false"
+  return 0
 }
 
 #################### 任务执行 ####################
@@ -369,6 +459,7 @@ fi
 
 #################### 下载订阅并生成 config.yaml（非兜底路径） ####################
 if [ "$SKIP_CONFIG_REBUILD" != "true" ]; then
+  ensure_subconverter || true
   echo -e '\n正在下载Clash配置文件...'
   Text3="配置文件clash.yaml下载成功！"
   Text4="配置文件clash.yaml下载失败！"
@@ -426,19 +517,81 @@ if [ "$SKIP_CONFIG_REBUILD" != "true" ]; then
     done
   fi
 
-  # --- GUARANTEE: make sure runtime config exists after download ---
   CONFIG_FILE="${CONFIG_FILE:-$Temp_Dir/config.yaml}"
   mkdir -p "$Temp_Dir" || true
 
   if [ "$ReturnStatus" -eq 0 ] && [ -s "$Temp_Dir/clash.yaml" ]; then
-    # 1) 订阅作为完整配置写入运行态 config
-    cp -f "$Temp_Dir/clash.yaml" "$CONFIG_FILE"
+    SRC_YAML="$Temp_Dir/clash.yaml"
 
-    # 2) 强制注入 external-controller / external-ui（运行态兜底）
+    # 1) 判断是否是完整 Clash 配置（关键字段之一存在即可）
+    if grep -qE '^(proxies:|proxy-providers:|rules:|port:|mixed-port:|dns:)' "$SRC_YAML"; then
+      cp -f "$SRC_YAML" "$CONFIG_FILE"
+      echo "[INFO] subscription already is a full clash config"
+    else
+      # 2) 非完整配置：尝试用 subconverter 转换
+      echo "[INFO] subscription is not a full config, try conversion via subconverter..."
+
+      export IN_FILE="$SRC_YAML"
+      export OUT_FILE="$Temp_Dir/clash_converted.yaml"
+
+      set +e
+      bash "$Server_Dir/scripts/clash_profile_conversion.sh"
+      conv_rc=$?
+      set -e
+
+      if [ "$conv_rc" -eq 0 ] && [ -s "$OUT_FILE" ]; then
+        cp -f "$OUT_FILE" "$CONFIG_FILE"
+        echo "[INFO] conversion ok -> runtime config ready"
+      else
+        echo "[WARN] conversion skipped/failed, will keep original and rely on fallback"
+        cp -f "$SRC_YAML" "$CONFIG_FILE"
+      fi
+    fi
+
+    # 3) 强制注入 external-controller / external-ui（运行态兜底）
     force_write_controller_and_ui "$CONFIG_FILE" || true
 
-    # 3) 强制注入 secret
+    # 4) 强制注入 secret
     force_write_secret "$CONFIG_FILE" || true
+
+    # Optional: Fix test URLs to HTTPS for reliability (safe, narrow scope)
+    if [ "${FIX_TEST_URL_HTTPS:-true}" = "true" ] && [ -s "$CONFIG_FILE" ]; then
+      # 1) proxy-groups: url-test / fallback url
+      sed -i -E "s#(url:[[:space:]]*['\"])http://#\1https://#g" "$CONFIG_FILE" 2>/dev/null || true
+
+      # 2) cfw-latency-url (some dashboards)
+      sed -i -E "s#(cfw-latency-url:[[:space:]]*['\"])http://#\1https://#g" "$CONFIG_FILE" 2>/dev/null || true
+
+      # 3) proxy-providers health-check url (mihomo warns about this)
+      sed -i -E "s#(health-check:[[:space:]]*\n[[:space:]]*url:[[:space:]]*['\"])http://#\1https://#g" "$CONFIG_FILE" 2>/dev/null || true
+    fi
+
+    # 5) 自检：失败则回退到旧配置（注意：脚本 set -e + trap ERR，必须 set +e 包裹）
+    BIN="${Server_Dir}/bin/clash-linux-amd64"
+    NEW_CFG="$CONFIG_FILE"
+    OLD_CFG="${Conf_Dir}/config.yaml"
+    TEST_OUT="$Temp_Dir/config.test.out"
+
+    if [ -x "$BIN" ] && [ -f "$NEW_CFG" ]; then
+      # 先尝试自动修复 external-ui 的 SAFE_PATH 问题（内部会跑 -t）
+      set +e
+      fix_external_ui_by_safe_paths "$BIN" "$NEW_CFG" "$TEST_OUT"
+      test_rc=$?
+      set -e
+
+      if [ "$test_rc" -ne 0 ]; then
+        echo "[ERROR] Generated config invalid, rc=$test_rc, reason(file=$TEST_OUT, size=$(wc -c <"$TEST_OUT" 2>/dev/null || echo 0))" >&2
+        tail -n 120 "$TEST_OUT" >&2 || true
+
+        echo "[ERROR] fallback to last good config: $OLD_CFG" >&2
+        if [ -f "$OLD_CFG" ]; then
+          cp -f "$OLD_CFG" "$NEW_CFG"
+        else
+          echo "[FATAL] No valid config available, aborting startup" >&2
+          exit 1
+        fi
+      fi
+    fi
 
     echo "[INFO] Runtime config generated: $CONFIG_FILE (size=$(wc -c <"$CONFIG_FILE" 2>/dev/null || echo 0))"
   else

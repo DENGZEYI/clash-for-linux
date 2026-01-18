@@ -139,12 +139,42 @@ fi
 info "CPU architecture: ${CpuArch}"
 
 # =========================
+# .env 写入工具：write_env_kv（必须在 prompt 之前定义）
+# - 自动创建文件
+# - 存在则替换，不存在则追加
+# - 统一写成：export KEY="VALUE"
+# - 自动转义双引号/反斜杠
+# =========================
+escape_env_value() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+write_env_kv() {
+  local file="$1"
+  local key="$2"
+  local val="$3"
+
+  mkdir -p "$(dirname "$file")" 2>/dev/null || true
+  [ -f "$file" ] || touch "$file"
+
+  val="$(printf '%s' "$val" | tr -d '\r')"
+  local esc
+  esc="$(escape_env_value "$val")"
+
+  if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file"; then
+    sed -i -E "s|^[[:space:]]*(export[[:space:]]+)?${key}=.*|export ${key}=\"${esc}\"|g" "$file"
+  else
+    printf 'export %s="%s"\n' "$key" "$esc" >> "$file"
+  fi
+}
+
+# =========================
 # 交互式填写订阅地址（仅在 CLASH_URL 为空时触发）
 # - 若非 TTY（CI/管道）则跳过交互
 # - 若用户回车跳过，则保持原行为：装完提示手动配置
 # =========================
 prompt_clash_url_if_empty() {
-  # 兼容 .env 里可能是 CLASH_URL= 或 CLASH_URL=""
+  # 兼容 .env 里可能是 CLASH_URL= / export CLASH_URL= / 带引号
   local cur="${CLASH_URL:-}"
   cur="${cur%\"}"; cur="${cur#\"}"
 
@@ -163,26 +193,29 @@ prompt_clash_url_if_empty() {
   echo "请粘贴你的 Clash 订阅地址（直接回车跳过，稍后手动编辑 .env）："
   read -r -p "Clash URL: " input_url
 
+  input_url="$(printf '%s' "$input_url" | tr -d '\r')"
+
+  # 回车跳过：保持原行为（不写入）
   if [ -z "$input_url" ]; then
     warn "已跳过填写订阅地址，安装完成后请手动编辑：${Install_Dir}/.env"
     return 0
   fi
 
+  # 先校验再写入，避免污染 .env
   if ! echo "$input_url" | grep -Eq '^https?://'; then
     err "订阅地址格式不正确（必须以 http:// 或 https:// 开头）"
     exit 1
   fi
 
-  # 写入 .env：优先替换已存在的 CLASH_URL= 行；若不存在则追加
-  if grep -qE '^CLASH_URL=' "$Install_Dir/.env"; then
-    # 用 | 做分隔符，避免 URL 里有 /
-    sed -i "s|^CLASH_URL=.*|CLASH_URL=\"$input_url\"|g" "$Install_Dir/.env"
-  else
-    echo "CLASH_URL=\"$input_url\"" >> "$Install_Dir/.env"
-  fi
+  ENV_FILE="${Install_Dir}/.env"
+  mkdir -p "$Install_Dir"
+  [ -f "$ENV_FILE" ] || touch "$ENV_FILE"
+
+  # ✅ 只用这一套写入逻辑（统一 export KEY="..."，兼容旧格式）
+  write_env_kv "$ENV_FILE" "CLASH_URL" "$input_url"
 
   export CLASH_URL="$input_url"
-  ok "已写入订阅地址到：${Install_Dir}/.env"
+  ok "已写入订阅地址到：${ENV_FILE}"
 }
 
 prompt_clash_url_if_empty
