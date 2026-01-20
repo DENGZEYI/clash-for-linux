@@ -1,5 +1,3 @@
-[TOC]
-
 # 关于本项目
 
 **clash-for-linux** 是一个面向 Linux 服务器/桌面环境的 **Clash 自动化运行与管理脚本集**。
